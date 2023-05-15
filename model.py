@@ -1,17 +1,18 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Nov 25 00:12:46 2022
+
+@author: Sadman Sakib
+"""
+
 import torch
-import numpy as np
-import pandas as pd
 import torch.nn as nn
-import matplotlib.pyplot as plt
-import glob
-from torch.utils.data import Dataset, DataLoader
 import math
-from tqdm import trange
 import torch.nn.functional as F
 
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, dropout=0.3, max_seq_len=200):
+class PositionalEncoder(nn.Module):
+    def __init__(self, d_model, dropout=0.2, max_seq_len=200):
         super().__init__()
 
         self.d_model = d_model
@@ -21,29 +22,27 @@ class PositionalEncoding(nn.Module):
         pos = torch.arange(0, max_seq_len).unsqueeze(1).float()
 
         two_i = torch.arange(0, d_model, step=2).float()
-        div_term = torch.pow(10000, (two_i / torch.Tensor([d_model]))).float()
-        pe[:, 0::2] = torch.sin(pos / div_term)
-        pe[:, 1::2] = torch.cos(pos / div_term)
+        div_term = torch.pow(10000, (two_i/torch.Tensor([d_model]))).float()
+        pe[:, 0::2] = torch.sin(pos/div_term)
+        pe[:, 1::2] = torch.cos(pos/div_term)
 
         pe = pe.unsqueeze(0)
 
-        # assigns the first argument to a class variable
-        # i.e. self.pe
         self.register_buffer("pe", pe)
 
     def forward(self, x):
-        # shape(x) = [B x seq_len x D]
+        # shape(x) : (B, seq_len, D)
 
         one_batch_pe: torch.Tensor = self.pe[:, :x.shape[1]].detach()
         repeated_pe = one_batch_pe.repeat([x.shape[0], 1, 1]).detach()
         x = x.add(repeated_pe)
-        # shape(x) = [B x seq_len x D]
+        # shape(x) : (B, seq_len, D)
 
         return self.dropout(x)
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, heads=8, dropout=0.1):
+    def __init__(self, d_model, heads=8, dropout=0.2):
         super().__init__()
         assert d_model % heads == 0
 
@@ -64,10 +63,10 @@ class MultiHeadAttention(nn.Module):
         """
 
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
-        # (B, head, len(Q), D/head) dot (B, head, D/head, len(KV)) -> (B, head, len(Q), len(KV))
+        #(B, head, len(Q), D/head) dot (B, head, D/head, len(KV)) -> (B, head, len(Q), len(KV))
 
         if mask is not None:
-            # mask = mask.unsqueeze(1)
+            #mask = mask.unsqueeze(1)
             scores = scores.masked_fill(mask == 0, -1e9)
 
         weights = F.softmax(scores, dim=-1)
@@ -76,7 +75,7 @@ class MultiHeadAttention(nn.Module):
             weights = dropout(weights)
 
         output = torch.matmul(weights, V)
-        # (B, head, len(Q), len(KV) dot (B, head, len(KV), D/head)) -> (B, head, len(Q), D/head))
+        #(B, head, len(Q), len(KV) dot (B, head, len(KV), D/head)) -> (B, head, len(Q), D/head))
         # shape(output) : (B, head, len(Q), D/head)
 
         return output
@@ -108,16 +107,17 @@ class MultiHeadAttention(nn.Module):
         # shape(scores) : (B, head, len(Q), D/head)
 
         # concatenate heads and put through final linear layer
-        concat = scores.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+        concat = scores.transpose(1, 2).contiguous().view(
+            batch_size, -1, self.d_model)
 
         output = self.out(concat)
-        # shape(scores) : (B, seq_len, D)
+        # shape(output) : (B, seq_len, D)
 
         return output
 
 
 class FeedForward(nn.Module):
-    def __init__(self, d_model, d_ff=2048, dropout=0.1):
+    def __init__(self, d_model, d_ff=128, dropout=0.2):
         super().__init__()
 
         self.linear_1 = nn.Linear(d_model, d_ff)
@@ -135,7 +135,7 @@ class FeedForward(nn.Module):
 
 
 class ResidualNorm(nn.Module):
-    def __init__(self, d_model, eps=1e-6, dropout=0.3):
+    def __init__(self, d_model, eps=1e-6, dropout=0.2):
         super().__init__()
 
         self.size = d_model
@@ -147,21 +147,22 @@ class ResidualNorm(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, residual):
+
         x = x + residual
         norm = self.alpha * (x - x.mean(dim=-1, keepdim=True)) \
-               / (x.std(dim=-1, keepdim=True) + self.eps) + self.bias
+            / (x.std(dim=-1, keepdim=True) + self.eps) + self.bias
 
         return self.dropout(norm)
 
 
 class EncoderLayer(nn.Module):
-    def __init__(self, d_model, heads, d_ff=16, dropout=0.1):
+    def __init__(self, d_model, heads, d_ff=128, dropout=0.2):
         super().__init__()
 
-        self.norm_1 = ResidualNorm(d_model)
-        self.norm_2 = ResidualNorm(d_model)
-        self.attn = MultiHeadAttention(d_model, heads)
-        self.ff = FeedForward(d_model, d_ff)
+        self.norm_1 = ResidualNorm(d_model, dropout)
+        self.norm_2 = ResidualNorm(d_model, dropout)
+        self.attn = MultiHeadAttention(d_model, heads, dropout)
+        self.ff = FeedForward(d_model, d_ff, dropout)
 
     def forward(self, x, mask=None):
         # shape(x) : (B, seq_len, D)
@@ -176,34 +177,39 @@ class EncoderLayer(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, d_model, heads, num_layers, dropout=0.3):
+    def __init__(self, src_size, d_model, heads, num_layers, d_ff=128, dropout=0.2):
         super().__init__()
+        # src_size : input features of the source time series
 
         self.num_layers = num_layers
+
+        self.en_input = nn.Linear(src_size, d_model)
+
         self.pe = PositionalEncoder(d_model)
         self.encoders = nn.ModuleList([EncoderLayer(
-            d_model, heads
+            d_model, heads, d_ff, dropout
         ) for layer in range(num_layers)])
 
     def forward(self, x, mask=None):
         # shape(x) : (B, src_seq_len, D)
 
-        encoding = self.pe(x)
+        en_inputs = self.en_input(x)
+        encoding = self.pe(en_inputs)
 
         for encoder in self.encoders:
-            encoding = encoder(encoding)
+            encoding = encoder(encoding, mask)
         # shape(encoding) : (B, src_seq_len, D)
 
         return encoding
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, d_model, heads, d_ff=16, dropout=0.3):
+    def __init__(self, d_model, heads, d_ff=128, dropout=0.2):
         super().__init__()
 
-        self.norm_1 = ResidualNorm(d_model)
-        self.norm_2 = ResidualNorm(d_model)
-        self.norm_3 = ResidualNorm(d_model)
+        self.norm_1 = ResidualNorm(d_model, dropout)
+        self.norm_2 = ResidualNorm(d_model, dropout)
+        self.norm_3 = ResidualNorm(d_model, dropout)
 
         self.masked_attn = MultiHeadAttention(d_model, heads, dropout)
         self.enc_dec_attn = MultiHeadAttention(d_model, heads, dropout)
@@ -222,7 +228,8 @@ class DecoderLayer(nn.Module):
         norm1 = self.norm_1(masked_score, x)
         # shape(norm1) = (B, trg_seq_len, D)
 
-        enc_dec_score = self.enc_dec_attn(norm1, encoder_outputs, encoder_outputs, mask=src_mask)
+        enc_dec_score = self.enc_dec_attn(norm1, encoder_outputs,
+                                          encoder_outputs, mask=src_mask)
         # shape(enc_dec_mha) = (B, trg_seq_len, D)
 
         norm2 = self.norm_2(enc_dec_score, norm1)
@@ -236,25 +243,32 @@ class DecoderLayer(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, d_model,
-                 num_heads, num_layers,
-                 d_ff=16, dropout=0.3):
+    def __init__(self,
+                 trg_size,
+                 d_model,
+                 heads,
+                 num_layers,
+                 d_ff=16,
+                 dropout=0.2):
         super().__init__()
+        # trg_size : features of the target output
 
-        self.pe = PositionalEncoding(d_model)
+        self.de_input = nn.Linear(trg_size, d_model)
+        self.pe = PositionalEncoder(d_model)
         self.dropout = nn.Dropout(dropout)
 
         self.decoders = nn.ModuleList([DecoderLayer(
             d_model,
-            num_heads,
-            d_ff=16,
-            dropout=0.2,
+            heads,
+            d_ff,
+            dropout,
         ) for layer in range(num_layers)])
 
-    def forward(self, x, encoder_output, trg_mask, src_mask):
+    def forward(self, x, encoder_output, trg_mask, src_mask=None):
         # shape(x) = (B, trg_seq_len, D)
 
-        decoding = self.pe(x)
+        de_inputs = self.de_input(x.unsqueeze(-1))
+        decoding = self.pe(de_inputs)
         # shape(decoding) = (B, trg_seq_len, D)
 
         for decoder in self.decoders:
@@ -264,4 +278,57 @@ class Decoder(nn.Module):
         return decoding
 
 
+class TS_Transformer(nn.Module):
+    def __init__(self, src_size, trg_size, d_model,
+                 heads, num_layers, trg_feature, d_ff=16, dropout=0.2):
+        super().__init__()
 
+        self.heads = heads
+
+        self.encoder = Encoder(src_size, d_model,
+                               heads, num_layers, d_ff, dropout)
+        self.decoder = Decoder(trg_size, d_model,
+                               heads, num_layers, d_ff, dropout)
+
+        self.linear_layer = nn.Linear(d_model, trg_feature)
+
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def create_masks(self, size):
+
+        mask = torch.triu(torch.ones(size, size)).transpose(
+            0, 1).type(dtype=torch.uint8)
+        return mask.unsqueeze(0).unsqueeze(0)
+
+    def forward(self, src, trg):
+        # shape(src) = (B, src_seq_len, D)
+        # shape(trg) = (B, trg_seq_len, D)
+
+        trg_mask = self.create_masks(trg.shape[1])
+        # shape(trg_mask) = (B, 1, trg_seq_len, trg_seq_len)
+
+        encoder_outputs = self.encoder(src, mask=None)
+        # shape(encoder_outputs) = (B, src_seq_len, D)
+
+        decoder_outputs = self.decoder(
+            trg, encoder_outputs, trg_mask, src_mask=None)
+        # shape(decoder_outputs) = (B, trg_seq_len, D)
+
+        out = self.linear_layer(decoder_outputs)
+        # shape(out) : (B, trg_seq_len, trg_feature)
+
+        return out.squeeze(-1)
+    
+    def encode(self, src, mask = None):
+        encoder_outputs = self.encoder(src, mask = None)
+        return encoder_outputs
+    
+    def decode(self, trg, encoder_outputs, trg_mask, src_mask = None):
+        
+        decoder_outputs = self.decoder(trg, encoder_outputs, trg_mask, src_mask = None)
+        out = self.linear_layer(decoder_outputs)
+        # shape(out) : (B, trg_seq_len, trg_feature)
+        
+        return out.squeeze(-1) 

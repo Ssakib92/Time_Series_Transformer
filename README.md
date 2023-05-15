@@ -1,1 +1,1 @@
-# Transformer from scrach using Pytorch for time series forecasting
+# Transformer from scratch using Pytorch for time series forecasting
